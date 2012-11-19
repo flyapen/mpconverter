@@ -1,7 +1,12 @@
 package com.entwinemedia.util
 
+import _root_.jline.ANSIBuffer.ANSICodes._
+import _root_.jline.{Terminal => JTerminal}
 import xml.{NodeSeq, Node}
 import xml.transform.{RewriteRule, RuleTransformer}
+import scala.Left
+import scala.Right
+import scala.Some
 
 object XmlXform {
   def xform(f: PartialFunction[Node, NodeSeq]): RuleTransformer = new RuleTransformer(rule(f))
@@ -63,4 +68,69 @@ object Trial {
   }
 
   implicit def _Any_Trial[A](f: => A): Trial[A] = new Trial(f)
+}
+
+object Extractors {
+  /** Number extractor. */
+  object Number {
+    val Regex = "([0-9]+)".r
+
+    def unapply(s: String): Option[Int] = s match {
+      case Regex(nr) => Some(nr.toInt)
+      case _ => None
+    }
+  }
+}
+
+/**
+ * Terminal utilities. Based on jLine.
+ */
+object Terminal {
+  val jterminal = JTerminal.getTerminal
+
+  val ClearStyle = attrib(0)
+
+  val Bold = attrib(1)
+  val Underscore = attrib(4)
+  val Blink = attrib(5)
+  val Reverse = attrib(7)
+  val Concealed = attrib(8)
+
+  val Black = attrib(30)
+  val Red = attrib(31)
+  val Green = attrib(32)
+  val Yellow = attrib(33)
+  val Blue = attrib(34)
+  val Magenta = attrib(35)
+  val Cyan = attrib(36)
+  val White = attrib(37)
+
+  val BgBlack = attrib(40)
+  val BgRed = attrib(41)
+  val BgGreen = attrib(42)
+  val BgYellow = attrib(43)
+  val BgBlue = attrib(44)
+  val BgMagenta = attrib(45)
+  val BgCyan = attrib(46)
+  val BgWhite = attrib(47)
+
+  /**
+   * Output to the console with a certain setting defined by `attr`.
+   * @param attr e.g. `Red` or `Red + Bold`
+   */
+  def terminal[A](attr: String)(f: => A): A = {
+    print(ClearStyle + attr)
+    val r = f
+    print(ClearStyle)
+    r
+  }
+
+  /** Create a styled string ready for console output. */
+  def style(attribs: String*)(s: String) = ClearStyle + attribs.mkString + s + ClearStyle
+
+  /** Get the current terminal width. */
+  def terminalWidth = jterminal.getTerminalWidth
+
+  /** Get the current terminal height. */
+  def terminalHeight = jterminal.getTerminalHeight
 }

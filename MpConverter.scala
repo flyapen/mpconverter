@@ -6,22 +6,24 @@ import scala.xml._
 import org.apache.commons.io.FilenameUtils
 import org.opencastproject.util.{MimeTypes, MimeType, FileSupport, ZipUtil}
 import com.entwinemedia.util._
+import com.entwinemedia.util.Extractors.Number
+import com.entwinemedia.util.Terminal._
 import org.opencastproject.mediapackage.{MediaPackage, MediaPackageElementFlavor}
+import scala.Left
+import scala.Right
+import scala.Some
 
 object MpConverter {
   import EitherImplicits._
   import Pipe._
   import Trial._
+  import Console.{readMimeType, readFlavor}
 
   def main(args: Array[String]) {
     val result = for {
       zipName <- args.headOption.toRight("please provide a zip filename")
       zipFile <- getZipFile(zipName)
     } yield convert(zipFile)
-    output(result)
-  }
-
-  def output[A](result: Either[String, A]) {
     result.fold(msg => println("[ERROR] " + msg), println _)
   }
 
@@ -81,54 +83,52 @@ object MpConverter {
     saveManifest(manifest, fixedMp)
   }
 
+  /** Create a new manifest in dialog with the user. */
   def buildManifest(root: File) = {
+    import Console.console.readLine
     val mpes = for {
       mpe <- findMpElems(root)
       (mimeType, flavor) = guessMimeTypeAndFlavor(mpe.file)
     } yield mpe.copy(mimeType = mimeType, flavor = flavor)
 
-    def opt(s: String) = if (s != "") Some(s) else None
-
     def confirm(mpes: List[Mpe]): List[Mpe] = {
       displayMpes(mpes)
-      print("[nr|ok]> ")
+      terminal(Bold)(print("Enter number or 'ok' > "))
       val (newMpes, ok) = readLine() match {
         case Number(nr) if nr < mpes.size =>
           val mpe = mpes(nr)
-          val mimeType = readLine("MimeType [" + mpe.mimeType.getOrElse("") + "] ")
-          val flavor = readLine("Flavor [" + mpe.flavor.getOrElse("") + "] ")
-          if (mimeType != "" || flavor != "") {
-            val patched = mpes.patch(nr, List(mpe.copy(
-              flavor = if (flavor != "") Some(MediaPackageElementFlavor.parseFlavor(flavor)) else mpe.flavor,
-              mimeType = if (mimeType != "") Some(MimeTypes.parseMimeType(mimeType)) else mpe.mimeType)
-            ), 1)
+          val mimeType = readMimeType(mpe.mimeType)
+          val flavor = readFlavor(mpe.flavor)
+          if (mimeType.isDefined || flavor.isDefined) {
+            val patch = mpe.copy(
+              flavor = flavor.map(a => Some(MediaPackageElementFlavor.parseFlavor(a))).getOrElse(mpe.flavor),
+              mimeType = mimeType.map(a => Some(MimeTypes.parseMimeType(a))).getOrElse(mpe.mimeType)) :: Nil
+            val patched = mpes.patch(nr, patch, 1)
             (patched, false)
           } else {
             (mpes, false)
           }
         case "ok" => (mpes, true)
+        case "q" => throw new RuntimeException("quit")
         case _ => (mpes, false)
       }
-      if (notComplete(newMpes) || !ok) confirm(newMpes) else newMpes
+      (isComplete(newMpes), ok) match {
+        case (true, true) => newMpes
+        case (false, true) => terminal(Red)(println("Not yet complete")); confirm(newMpes)
+        case _ => confirm(newMpes)
+      }
     }
     confirm(mpes)
   }
 
-  object Number {
-    val Regex = "([0-9]+)".r
-    def unapply(s: String): Option[Int] = s match {
-      case Regex(nr) => Some(nr.toInt)
-      case _ => None
-    }
-  }
-
+  /** Print the list of media package elements. */
   def displayMpes(mpes: List[Mpe]) {
     def display[A](a: Option[A]) = a.getOrElse("<unknown>")
     for ((mpe, index) <- mpes.zipWithIndex)
       println(index + ": " + mpe.id + ", " + mpe.name + ": " + display(mpe.mimeType) + ", " + display(mpe.flavor))
   }
 
-  def notComplete(mpes: List[Mpe]): Boolean = mpes.exists(mpe => notComplete(mpe))
+  def isComplete(mpes: List[Mpe]): Boolean = !mpes.exists(mpe => notComplete(mpe))
 
   def notComplete(mpe: Mpe): Boolean = mpe.mimeType.isEmpty || mpe.flavor.isEmpty
 
@@ -143,4 +143,36 @@ object MpConverter {
 
   /** Save a manifest. */
   def saveManifest(manifest: File, mp: Node) { XML.save(manifest.getAbsolutePath, mp, enc = "utf-8", xmlDecl = true, doctype = null) }
+}
+
+/** Combine user input related stuff. */
+object Console {
+  import MimeTypes._
+  import org.opencastproject.mediapackage.MediaPackageElements._
+  import Pipe._
+  import jline.{Completor, SimpleCompletor, ConsoleReader}
+
+  val mimeTypes = Array(XML, TEXT, JSON, JPG, MJPEG, MPEG4, MPEG4_AAC, DV, MJPEG2000, MP3, AAC, CALENDAR, ZIP, JAR)
+  val flavors = Array(MEDIAPACKAGE_COVER_FLAVOR, PRESENTER_SOURCE, PRESENTATION_SOURCE, AUDIENCE_SOURCE, DOCUMENTS_SOURCE, INDEFINITE_SOURCE, EPISODE, SERIES, SEGMENTS, TEXTS, SPEECH, CHAPTERING, PRESENTER_PLAYER_PREVIEW, PRESENTATION_PLAYER_PREVIEW, PRESENTER_SEARCHRESULT_PREVIEW, PRESENTATION_SEARCHRESULT_PREVIEW, PRESENTER_SEGMENT_PREVIEW, PRESENTATION_SEGMENT_PREVIEW, PRESENTER_FEED_PREVIEW, PRESENTATION_FEED_PREVIEW, XACML_POLICY_EPISODE, XACML_POLICY_SERIES, XACML_POLICY, CAPTION_GENERAL, CAPTION_DFXP_FLAVOR, YOUTUBE)
+  
+  val mimeTypeCompletor = new SimpleCompletor(mimeTypes.map(_.toString))
+  val flavorCompletor = new SimpleCompletor(flavors.map(_.toString))
+
+  /** Console to read input from user. */
+  val mimeTypeConsole = newConsole(mimeTypeCompletor)
+  val flavorConsole = newConsole(flavorCompletor)
+  val console = new ConsoleReader()
+
+  private def newConsole(completor: Completor) = (new ConsoleReader) &> {
+    c =>
+      c.addCompletor(mimeTypeCompletor)
+      c.setUseHistory(true)
+  }
+
+  def readMimeType(current: Option[MimeType]) = read(mimeTypeConsole, "MimeType", current)
+  def readFlavor(current: Option[MediaPackageElementFlavor]) = read(mimeTypeConsole, "MimeType", current)
+
+  def read[A](console: ConsoleReader, msg: String, default: Option[A]): Option[String] = {
+    console.readLine(style(Bold)(msg + " [" + default.getOrElse("") + "] > ")).trim |> (input => if (input != "") Some(input) else None)
+  }
 }
