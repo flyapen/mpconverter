@@ -7,6 +7,8 @@ import xml.transform.{RewriteRule, RuleTransformer}
 import scala.Left
 import scala.Right
 import scala.Some
+import java.io.File
+import org.opencastproject.util.{ZipUtil, FileSupport}
 
 object XmlXform {
   def xform(f: PartialFunction[Node, NodeSeq]): RuleTransformer = new RuleTransformer(rule(f))
@@ -79,6 +81,22 @@ object Extractors {
       case Regex(nr) => Some(nr.toInt)
       case _ => None
     }
+  }
+}
+
+object Io {
+  /** Use a resource ensuring it gets closed afterwards. */
+  def use[A <: {def close()}, B](resource: A)(f: A => B) = try {
+    f(resource)
+  } finally {
+    resource.close()
+  }
+
+  /** Apply directory `d` to function `f` deleting the directory afterwards. */
+  def withTmpDir[A](d: File)(f: File => A) = try {
+    f(d)
+  } finally {
+    FileSupport.delete(d, true)
   }
 }
 
