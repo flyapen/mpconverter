@@ -24,11 +24,15 @@ object MpConverter {
   import Console.{readMimeType, readFlavor, readMpeType}
 
   def main(args: Array[String]) {
+    println("""MediaPackage Converter
+              |Fixes media package XML namespace issue or builds a manifest from a directory structure.
+              |Use tab completion when editing element infos.
+            """.stripMargin)
     val result = for {
       zipName <- args.headOption.toRight("please provide a zip filename")
       zipFile <- getZipFile(zipName)
     } yield convert(zipFile)
-    result.fold(msg => println("[ERROR] " + msg), println _)
+    result.fold(msg => println(style(Red)("[ERROR] " + msg)), println _)
   }
 
   val ZIP_EXT = ".zip"
@@ -151,10 +155,19 @@ object MpConverter {
 
   /** Print the list of media package elements. */
   def displayMpes(mpes: List[Mpe]) {
-    def display[A](a: Option[A]) = a.getOrElse("<unknown>")
+    import math._
+    def display[A](a: Option[A]) = a.map(_.toString).getOrElse("<unknown>")
+    def l(a: Any) = a.toString.length
+    def lo[A](a: Option[A]) = display(a).length
+    val cols = (ColWidths.zero /: mpes) {
+      (sum, a) =>
+        ColWidths(max(l(a.id), sum.id), max(l(a.name), sum.name), max(lo(a.mpeType), sum.mpeType), max(lo(a.mimeType), sum.mimeType), max(lo(a.flavor), sum.flavor))
+    }
+    def padr(w: Int, a: String) = (" " * max(0, w - a.length)) + a
+    def padl(w: Int, a: String) = a + (" " * max(0, w - a.length))
     for ((mpe, index) <- mpes.zipWithIndex) {
       val line = style(if (notComplete(mpe)) ClearStyle else Green) {
-        index + ": " + mpe.id + " -> " + mpe.name + ": " + display(mpe.mimeType) + ", " + display(mpe.flavor) + ", " + display(mpe.mpeType)
+        index + ": " + padl(cols.id, mpe.id) + " -> " + padl(cols.name, mpe.name) + ": " + padl(cols.mimeType, display(mpe.mimeType)) + ", " + display(mpe.flavor) + ", " + display(mpe.mpeType)
       }
       println(line)
     }
@@ -184,6 +197,12 @@ case class Mpe(file: File,
                mpeType: Option[MediaPackageElement.Type] = None,
                mimeType: Option[MimeType] = None,
                flavor: Option[MediaPackageElementFlavor] = None)
+
+case class ColWidths(id: Int, name: Int, mpeType: Int, mimeType: Int, flavor: Int)
+
+object ColWidths {
+  def zero = ColWidths(0, 0, 0, 0, 0)
+}
 
 /** Combine user input related stuff. */
 object Console {
