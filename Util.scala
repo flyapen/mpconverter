@@ -8,7 +8,7 @@ import scala.Left
 import scala.Right
 import scala.Some
 import java.io.File
-import org.opencastproject.util.{ZipUtil, FileSupport}
+import org.opencastproject.util.FileSupport
 
 object XmlXform {
   def xform(f: PartialFunction[Node, NodeSeq]): RuleTransformer = new RuleTransformer(rule(f))
