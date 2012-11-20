@@ -73,15 +73,30 @@ object MpConverter {
 
   /** Complete mpe by guessing mime type, flavor and type. */
   def complete(mpe: Mpe): Mpe = {
-    val mimeType = FilenameUtils.getExtension(mpe.name) match {
-      case "" => None
-      case ext => MimeTypes.fromSuffix(ext).tryOpt
+    import MediaPackageElements._
+    import MimeTypes._
+    import MediaPackageElement.Type._
+    val mimeType = FilenameUtils.getExtension(mpe.name).toLowerCase match {
+      case "mp4" => Some(MPEG4)
+      case "xml" => Some(XML)
+      case "txt" => Some(TEXT)
+      case "pdf" => Some(MimeTypes.fromString("application/pdf"))
+      case "mov" => Some(MimeTypes.fromString("video/quicktime"))
+      case "wav" => Some(MimeTypes.fromString("audio/x-wav"))
+      case _ => None
     }
-    val flavor = if (mpe.name.startsWith("mpeg-7")) Some(MediaPackageElements.TEXTS) else None
+    val flavor = (mpe.name.toLowerCase, mimeType) match {
+      case (name, Some(XML)) if name.startsWith("mpeg-7") => Some(TEXTS)
+      case (name, _) if name.startsWith("camera") => Some(PRESENTER_SOURCE)
+      case (name, _) if name.startsWith("screen") => Some(PRESENTATION_SOURCE)
+      case (name, Some(XML)) if name.startsWith("episode") => Some(EPISODE)
+      case (name, Some(XML)) if name.startsWith("series") => Some(SERIES)
+      case _ => None
+    }
     val mpeType = mimeType.map {
-      case MimeTypes.MPEG4 => MediaPackageElement.Type.Track
-      case MimeTypes.XML => MediaPackageElement.Type.Catalog
-      case _ => MediaPackageElement.Type.Attachment
+      case MPEG4 => Track
+      case XML => Catalog
+      case _ => Attachment
     }
     mpe.copy(mimeType = mimeType, flavor = flavor, mpeType = mpeType)
   }
@@ -102,7 +117,7 @@ object MpConverter {
   /** Create a new manifest in dialog with the user. */
   def buildMediaPackage(root: File): MediaPackage = {
     val mpes = findMpElems(root).map(complete _)
-    completeMpes(mpes).map(mediaPackageElementFrom _) |> (newMediaPackage _)
+    completeMpes(mpes, true).map(mediaPackageElementFrom _) |> (newMediaPackage _)
   }
 
   val mpBuilder = MediaPackageBuilderFactory.newInstance.newMediaPackageBuilder
@@ -118,9 +133,9 @@ object MpConverter {
 
   /** Complete media package element information. */
   @tailrec
-  def completeMpes(mpes: List[Mpe]): List[Mpe] = {
+  def completeMpes(mpes: List[Mpe], showTable: Boolean): List[Mpe] = {
     import Console.console.readLine
-    MpeTableOutput.display(mpes)
+    if (showTable) MpeTableOutput.display(mpes)
     val (newMpes, ok) = readLine(style(Bold)("Enter number or 'ok' > ")) match {
       case Number(nr) if nr < mpes.size =>
         val mpe = mpes(nr)
@@ -148,9 +163,9 @@ object MpConverter {
     (isComplete(newMpes), ok) match {
       case (true, true) => newMpes
       case (false, true) =>
-        println(style(Red)("Not yet complete."))
-        completeMpes(newMpes)
-      case _ => completeMpes(newMpes)
+        println(style(Red)("Not yet complete. Force media package creation with 'ok!'. This strips all incomplete elements."))
+        completeMpes(newMpes, false)
+      case _ => completeMpes(newMpes, true)
     }
   }
 
