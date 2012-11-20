@@ -11,10 +11,11 @@ import com.entwinemedia.util.Terminal._
 import org.opencastproject.mediapackage._
 import MediaPackageElements.MANIFEST_FILENAME
 import annotation.tailrec
+import java.net.{URLEncoder, URI}
+import math._
 import scala.Left
 import scala.Some
 import scala.Right
-import java.net.{URLEncoder, URI}
 
 /** Convert a zipped 1.3 media package into a 1.4 one or create it from a zipped directory structure. */
 object MpConverter {
@@ -32,7 +33,7 @@ object MpConverter {
       zipName <- args.headOption.toRight("please provide a zip filename")
       zipFile <- getZipFile(zipName)
     } yield convert(zipFile)
-    result.fold(msg => println(style(Red)("[ERROR] " + msg)), println _)
+    result.fold(msg => println(style(Red)(msg)), println _)
   }
 
   val ZIP_EXT = ".zip"
@@ -119,14 +120,14 @@ object MpConverter {
   @tailrec
   def completeMpes(mpes: List[Mpe]): List[Mpe] = {
     import Console.console.readLine
-    displayMpes(mpes)
+    MpeTableOutput.display(mpes)
     val (newMpes, ok) = readLine(style(Bold)("Enter number or 'ok' > ")) match {
       case Number(nr) if nr < mpes.size =>
         val mpe = mpes(nr)
         println("\n" + mpe.id + " -> " + mpe.name)
-        val mimeType = readMimeType(mpe.mimeType)
-        val flavor = readFlavor(mpe.flavor)
         val mpeType = readMpeType(mpe.mpeType)
+        val flavor = readFlavor(mpe.flavor)
+        val mimeType = readMimeType(mpe.mimeType)
         if (mimeType.isDefined || flavor.isDefined || mpeType.isDefined) {
           val patch = mpe.copy(
             flavor = flavor.orElse(mpe.flavor),
@@ -140,7 +141,7 @@ object MpConverter {
       case "ok" => (mpes, true)
       case "q" => throw new RuntimeException("quit")
       case _ =>
-        println(style(Yellow)("Type a number, 'ok' when finished or 'q' to quit"))
+        println(style(Yellow)("Type a number, 'ok' when finished or 'q' to quit."))
         (mpes, false)
     }
     //
@@ -153,23 +154,33 @@ object MpConverter {
     }
   }
 
-  /** Print the list of media package elements. */
-  def displayMpes(mpes: List[Mpe]) {
-    import math._
-    def display[A](a: Option[A]) = a.map(_.toString).getOrElse("<unknown>")
-    def l(a: Any) = a.toString.length
-    def lo[A](a: Option[A]) = display(a).length
-    val cols = (ColWidths.zero /: mpes) {
-      (sum, a) =>
-        ColWidths(max(l(a.id), sum.id), max(l(a.name), sum.name), max(lo(a.mpeType), sum.mpeType), max(lo(a.mimeType), sum.mimeType), max(lo(a.flavor), sum.flavor))
-    }
-    def padr(w: Int, a: String) = (" " * max(0, w - a.length)) + a
-    def padl(w: Int, a: String) = a + (" " * max(0, w - a.length))
-    for ((mpe, index) <- mpes.zipWithIndex) {
-      val line = style(if (notComplete(mpe)) ClearStyle else Green) {
-        index + ": " + padl(cols.id, mpe.id) + " -> " + padl(cols.name, mpe.name) + ": " + padl(cols.mimeType, display(mpe.mimeType)) + ", " + display(mpe.flavor) + ", " + display(mpe.mpeType)
+  object MpeTableOutput {
+    // padding functions and prefixes
+    private val pad = List(("", padr _), ("| ", padl _), (" | ", padl _), (" |", padl _), ("|", padl _), ("|", padl _))
+
+    private def padr(w: Int, a: String) = (" " * max(0, w - a.length)) + a
+    private def padl(w: Int, a: String) = a + (" " * max(0, w - a.length))
+
+    private def display[A](a: Option[A]) = a.map(_.toString).getOrElse("<unknown>")
+
+    /** Print the list of media package elements. */
+    def display(mpes: List[Mpe]) {
+      // serialize to strings
+      val rows = for ((mpe, index) <- mpes.zipWithIndex) yield {
+        import mpe._
+        List(index.toString, id.toString, name.toString, display(mpeType), display(flavor), display(mimeType))
       }
-      println(line)
+      val rows_ = List("Nr", "Id", "Name", "Type", "Flavor", "MimeType") :: rows
+      // calculate the maximum word width in each column
+      val wordWidths = rows_.map(_.map(_.length)).transpose.map(_.max)
+      def outRow(row: List[String]) = ("" /: (row, wordWidths, pad).zipped) {case (sum, (col, w, (sep, p))) => sum + sep + p(w, col)}
+      // print table header
+      println(style(Bold)(outRow(rows_.head)))
+      // print table body
+      for ((row, mpe) <- rows zip mpes) {
+        val style_ = if (notComplete(mpe)) ClearStyle else Green
+        println(style(style_)(outRow(row)))
+      }
     }
   }
 
@@ -190,6 +201,18 @@ object MpConverter {
   def saveMediaPackage(mp: MediaPackage, dir: File) {
     Io.use(new FileOutputStream(new File(dir, MANIFEST_FILENAME)))(MediaPackageParser.getAsXml(mp, _, true))
   }
+
+  def zip4[A, B, C, D](as: List[A], bs: List[B], cs: List[C], ds: List[D]): List[(A, B, C, D)] = (as, bs, cs, ds) match {
+    case (a :: as, b :: bs, c :: cs, d :: ds) => (a, b, c, d) :: zip4(as, bs, cs, ds)
+    case _ => Nil
+  }
+
+  @tailrec
+  def zip4[A, B, C, D](sum: List[(A, B, C, D)], as: List[A], bs: List[B], cs: List[C], ds: List[D]): List[(A, B, C, D)] =
+    (as, bs, cs, ds) match {
+      case (a :: as, b :: bs, c :: cs, d :: ds) => zip4((a, b, c, d) :: sum, as, bs, cs, ds)
+      case _ => sum.reverse
+    }
 }
 
 case class Mpe(file: File,
@@ -197,12 +220,6 @@ case class Mpe(file: File,
                mpeType: Option[MediaPackageElement.Type] = None,
                mimeType: Option[MimeType] = None,
                flavor: Option[MediaPackageElementFlavor] = None)
-
-case class ColWidths(id: Int, name: Int, mpeType: Int, mimeType: Int, flavor: Int)
-
-object ColWidths {
-  def zero = ColWidths(0, 0, 0, 0, 0)
-}
 
 /** Combine user input related stuff. */
 object Console {
