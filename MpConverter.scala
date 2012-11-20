@@ -47,16 +47,22 @@ object MpConverter {
   }
 
   /** Convert a MH 1.3 media package or a media package without manifest into a MH 1.4 compliant one. */
-  def convert(zipFile: File): Either[String, Any] = Io.withTmpDir(unzip(zipFile)) {
-    dir =>
-      getManifest(dir) match {
-        case Some(manifest) => fixNamespace(manifest)
-        case None =>
-          val mp = buildMediaPackage(dir)
-          saveMediaPackage(mp, dir)
-      }
-      zipContent(dir)
-  }.tryMsg
+  def convert(zipFile: File): Either[String, Any] = {
+    println("Unzipping media package...")
+    Io.withTmpDir(unzip(zipFile)) {
+      dir =>
+        getManifest(dir) match {
+          case Some(manifest) =>
+            println("Found manifest. Fixing namespace.")
+            fixNamespace(manifest)
+          case None =>
+            val mp = buildMediaPackage(dir)
+            saveMediaPackage(mp, dir)
+        }
+        println("Zipping media package...")
+        zipContent(dir)
+    }.tryMsg
+  }
 
   /** Unzip the given file to a temporary directory which is returned. */
   def unzip(zip: File): File = TmpDir.toDir(zip) &> (ZipUtil.unzip(zip, _: File))
@@ -72,7 +78,7 @@ object MpConverter {
   }
 
   /** Complete mpe by guessing mime type, flavor and type. */
-  def complete(mpe: Mpe): Mpe = {
+  def guess(mpe: Mpe): Mpe = {
     import MediaPackageElements._
     import MimeTypes._
     import MediaPackageElement.Type._
@@ -102,7 +108,10 @@ object MpConverter {
   }
 
   /** Get media package manifest from a media package root dir. */
-  def getManifest(root: File): Option[File] = root.listFiles.toList.find(f => f.getName == "mediapackage.xml" || f.getName == "index.xml")
+  def getManifest(root: File): Option[File] = root.listFiles.toList.find(_.getName.toLowerCase match {
+    case "mediapackage.xml" | "index.xml" | "manifest.xml" => true
+    case _ => false
+  })
 
   def fixNamespace(manifest: File) {
     import XmlXform._
@@ -116,7 +125,7 @@ object MpConverter {
 
   /** Create a new manifest in dialog with the user. */
   def buildMediaPackage(root: File): MediaPackage = {
-    val mpes = findMpElems(root).map(complete _)
+    val mpes = findMpElems(root).map(guess _)
     completeMpes(mpes, true).map(mediaPackageElementFrom _) |> (newMediaPackage _)
   }
 
