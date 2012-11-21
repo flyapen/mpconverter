@@ -9,6 +9,8 @@ import scala.Right
 import scala.Some
 import java.io.File
 import org.opencastproject.util.FileSupport
+import java.net.{URLEncoder, URI}
+import de.schlichtherle.io
 
 object XmlXform {
   def xform(f: PartialFunction[Node, NodeSeq]): RuleTransformer = new RuleTransformer(rule(f))
@@ -66,6 +68,8 @@ object Trial {
   class Trial[A](f: => A) {
     def tryMsg = try {f.success} catch {case e: Exception => e.getMessage.fail}
 
+    def tryEx = try {f.success} catch {case e: Exception => e.fail}
+
     def tryOpt = try {Some(f)} catch {case e: Exception => None}
   }
 
@@ -96,8 +100,40 @@ object Io {
   def withTmpDir[A](d: File)(f: File => A) = try {
     f(d)
   } finally {
-    FileSupport.delete(d, true)
+    //FileSupport.delete(d, true)
   }
+}
+
+/** File with a base dir. `base` must be a directory and a parent of `file`. */
+case class BFile(file: File, base: File) {
+  if (!base.isDirectory) throw new Error(base + " is not a directory")
+  if (!file.getAbsolutePath.startsWith(base.getAbsolutePath)) throw new Error(base + " is not a parent of " + file)
+
+  /** The relative path of `file` related to `base`. */
+  lazy val relativePath = file.getAbsolutePath.drop(base.getAbsolutePath.length + 1)
+
+  lazy val relativePathAsUri = new URI(relativePath.split(File.separator).map(URLEncoder.encode(_, "UTF-8")).mkString("/"))
+}
+
+object BFile {
+  def apply(base: File, path: String): BFile = BFile(new File(base, path), base)
+
+}
+
+object Zip {
+  // TrueZip
+  import de.schlichtherle.io.{File => TFile}
+
+  def zip(files: List[BFile], zip: File): File = {
+    val tzip = new TFile(zip)
+    if (!tzip.isArchive) throw new Error(zip + " is not a zip file")
+    for (file <- files) TFile.cp(file, new TFile(tzip, file.relativePath))
+    TFile.umount(tzip)
+    tzip
+  }
+
+  implicit def _File_TFile(f: File): TFile = new TFile(f)
+  implicit def _BFile_TFile(f: BFile): TFile = new TFile(f.file)
 }
 
 /**
