@@ -32,37 +32,46 @@ object MpConverter {
               |Use tab completion when editing element infos.
             """.stripMargin)
     val result = for {
-      zipName <- args.headOption.toRight("please provide a zip filename")
-      zipFile <- getZipFile(zipName)
-    } yield convert(zipFile)
+      name <- args.headOption.toRight("please provide a zip filename")
+      doz <- getZipOrDir(name)
+    } yield {
+      if (doz.isFile) {
+        println("Unzipping media package...")
+        Io.withTmpDir(unzip(doz))(convert _).tryMsg
+      }
+      else
+        convert(doz).tryMsg
+    }
     result.fold(msg => println(style(Red)(msg)), println _)
   }
 
   val ZIP_EXT = ".zip"
 
-  def getZipFile(name: String): Either[String, File] = {
-    val zip = new File(name)
-    if (zip.isFile && name.takeRight(ZIP_EXT.length).equalsIgnoreCase(ZIP_EXT))
-      Right(zip)
-    else
-      Left(name + " does not exist or is probably not a zip file")
+  def getZipOrDir(name: String): Either[String, File] = {
+    val doz = new File(name)
+    if (doz.isFile) {
+      if (name.takeRight(ZIP_EXT.length).equalsIgnoreCase(ZIP_EXT))
+        Right(doz)
+      else
+        Left(name + " is not a zip file")
+    } else if (doz.isDirectory) {
+      Right(doz)
+    } else {
+      Left(name + " does not exist")
+    }
   }
 
   /** Convert a MH 1.3 media package or a media package without manifest into a MH 1.4 compliant one. */
-  def convert(zipFile: File): Either[Any, Any] = {
-    println("Unzipping media package...")
-    Io.withTmpDir(unzip(zipFile)) {
-      dir =>
-        val (manifest, mp) = getManifest(dir) match {
-          case Some(manifest) =>
-            println("Found manifest. Fixing namespace.")
-            (manifest, fixNamespace(manifest))
-          case None =>
-            val mp = buildMediaPackage(dir)
-            (saveMediaPackage(mp, dir), mp)
-        }
-        zipMp(BFile(manifest, dir), mp)
-    }.tryMsg
+  def convert(root: File): File = {
+    val (manifest, mp) = getManifest(root) match {
+      case Some(manifest) =>
+        println("Found manifest. Fixing namespace.")
+        (manifest, fixNamespace(manifest))
+      case None =>
+        val mp = buildMediaPackage(root)
+        (saveMediaPackage(mp, root), mp)
+    }
+    zipMp(BFile(manifest, root), mp)
   }
 
   /** Unzip the given file to a temporary directory which is returned. */
@@ -71,7 +80,8 @@ object MpConverter {
   val RelativeFileUrl = "file://([^/].+)".r
   val RelativePath = "([^/].+)".r
 
-  /** Zip a media package. */
+  /** Zip a media package.
+    * @return the zipped media package. */
   def zipMp(manifest: BFile, mp: MediaPackage): File = {
     def mkFile(uri: URI): Option[BFile] = uri.toString match {
       case RelativeFileUrl(path) => Some(BFile(manifest.base, path))
@@ -88,7 +98,13 @@ object MpConverter {
   object TmpDir {
     val uuidLength = UUID.randomUUID().toString.length
     def dirFor(zip: File) = new File(zip.getParentFile, FilenameUtils.getBaseName(zip.getName) + "-" + UUID.randomUUID().toString)
-    def zipFor(dir: File) = new File(dir.getParentFile, dir.getName.dropRight(uuidLength) + "1.4.zip")
+    def zipFor(dir: File) = {
+      val zipName = dir.getName.dropRight(uuidLength) match {
+        case "" => dir.getName + "-1.4.zip"
+        case n => n + "1.4.zip"
+      }
+      new File(dir.getParentFile, zipName)
+    }
   }
 
   /** Complete mpe by guessing mime type, flavor and type. */
