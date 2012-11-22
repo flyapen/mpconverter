@@ -32,7 +32,7 @@ object MpConverter {
               |Use tab completion when editing element infos.
             """.stripMargin)
     val result = for {
-      name <- args.headOption.toRight("please provide a zip filename")
+      name <- args.headOption.toRight("please provide a zip file or a directory")
       doz <- getZipOrDir(name)
     } yield {
       if (doz.isFile) {
