@@ -183,7 +183,7 @@ object MpConverter {
   def completeMpes(mpes: List[Mpe], showTable: Boolean): List[Mpe] = {
     import Console.console.readLine
     if (showTable) MpeTableOutput.display(mpes)
-    val (newMpes, ok) = readLine(style(Bold)("Enter number, 'ok' or 'ok!' > ")) match {
+    val (newMpes, ok) = readLine(style(Bold)("[Return for help] > ")) match {
       case Number(nr) if nr < mpes.size =>
         val mpe = mpes(nr)
         println("\nFixing " + mpe.id + " -> " + mpe.name)
