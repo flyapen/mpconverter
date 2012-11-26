@@ -13,4 +13,4 @@ To build the script run "sbt one-jar" in the projects base dir and copy the resu
 
 RUNNING
 The only requirement for running the converter is a Java 1.5+ runtime. Run "mpconv.sh" and follow the instructions.
-
+Please note that the manifest file is being rewritten in place when input is a directory and not a zipped media package.
