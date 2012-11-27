@@ -6,8 +6,9 @@ import scala.xml._
 import org.apache.commons.io.FilenameUtils
 import org.opencastproject.util.{MimeTypes, MimeType, ZipUtil}
 import com.entwinemedia.util._
-import com.entwinemedia.util.Extractors.Number
+import com.entwinemedia.util.Extractors.{FileInfo, Number}
 import com.entwinemedia.util.Terminal._
+import com.entwinemedia.util.FunctionImplicits._
 import org.opencastproject.mediapackage._
 import MediaPackageElements.MANIFEST_FILENAME
 import annotation.tailrec
@@ -15,7 +16,8 @@ import java.net.URI
 import math._
 import scala.Left
 import scala.Some
-import scala.Right
+import scala.sys.process._
+import com.entwinemedia.util.Extractors.FileInfo.{IsDir, IsFile}
 
 /**
  * Convert a zipped 1.3 media package into a 1.4 one or create it from a zipped directory structure.
@@ -26,6 +28,12 @@ object MpConverter {
   import Trial._
   import Console.{readMimeType, readFlavor, readMpeType}
 
+  val ZIP_EXT = "zip"
+  val TAR_GZ_EXT = "tar.gz"
+  val TGZ_EXT = "tgz"
+
+  val INDENTION = "  "
+
   def main(args: Array[String]) {
     println("""MediaPackage Converter
               |Fixes media package XML namespace issue or builds a manifest from a directory structure.
@@ -33,71 +41,92 @@ object MpConverter {
             """.stripMargin)
     val result = for {
       name <- args.headOption.toRight("please provide a zip file or a directory")
-      doz <- getZipOrDir(name)
-    } yield {
-      if (doz.isFile) {
-        println("Unzipping media package...")
-        Io.withTmpDir(unzip(doz))(convert _).tryMsg
-      }
-      else
-        convert(doz).tryMsg
-    }
-    result.fold(msg => println(style(Red)(msg)), println _)
+      result <- process(name)
+    } yield result
+    result.fold(
+      msg => println("[" + style(Red)("ERROR") + "] " + msg),
+      msg => println("[" + style(Green)("SUCCESS") + "] " + msg))
   }
 
-  val ZIP_EXT = ".zip"
+  val FileInfoEx = new FileInfo(true)
 
-  def getZipOrDir(name: String): Either[String, File] = {
-    val doz = new File(name)
-    if (doz.isFile) {
-      if (name.takeRight(ZIP_EXT.length).equalsIgnoreCase(ZIP_EXT))
-        Right(doz)
-      else
-        Left(name + " is not a zip file")
-    } else if (doz.isDirectory) {
-      Right(doz)
-    } else {
-      Left(name + " does not exist")
+  /** Process a file or a directory. */
+  def process(name: String): Either[String, String] = {
+    def archived(extract: => File) =
+      Io.withTmpDir(extract)((convert _) ° findRoot).tryMsg
+    val r = new File(name) match {
+      case doz@FileInfoEx(_, _, ZIP_EXT, IsFile) =>
+        println("Unzipping media package...")
+        archived(unzip(doz))
+      case doz@FileInfoEx(_, _, TAR_GZ_EXT | TGZ_EXT, IsFile) =>
+        println("Untar/gzip media package...")
+        archived(untgz(doz))
+      case doz@FileInfoEx(_, _, _, IsDir) =>
+        println("Using directory")
+        convert(BasedFile(doz, doz)).tryMsg
+      case a =>
+        Left(a + " does not exist")
     }
+    r.right.map(zip => "Created " + zip)
   }
 
   /** Convert a MH 1.3 media package or a media package without manifest into a MH 1.4 compliant one. */
-  def convert(root: File): File = {
-    val (manifest, mp) = getManifest(root) match {
+  def convert(dir: BasedFile): File = {
+    val (manifest, mp) = getManifest(dir.sub) match {
       case Some(manifest) =>
         println("Found manifest. Fixing namespace.")
         (manifest, fixNamespace(manifest))
       case None =>
-        val mp = buildMediaPackage(root)
-        (saveMediaPackage(mp, root), mp)
+        val mp = buildMediaPackage(dir.sub)
+        (saveMediaPackage(mp, dir.sub), mp)
     }
-    zipMp(BFile(manifest, root), mp)
+    zipMp(dir.base, manifest, mp)
   }
 
   /** Unzip the given file to a temporary directory which is returned. */
   def unzip(zip: File): File = TmpDir.dirFor(zip) &> (ZipUtil.unzip(zip, _: File))
 
+  /** Untar the given file to a temporary directory which is returned. */
+  def untgz(tgz: File): File = TmpDir.dirFor(tgz) &> { d =>
+    if (!d.mkdirs()) throw new RuntimeException("Error creating " + d)
+    Process("tar" :: "xzvf" :: tgz.getAbsolutePath :: Nil, d) ! ProcessLogger(a => println(INDENTION + a))
+  }
+
+  /** Find the root of the media package inside `dir`. This is either `dir` itself or a single nested sub-dir. */
+  def findRoot(dir: File): BasedFile = dir.listFiles.toList match {
+    case List(f) if f.isDirectory => BasedFile(dir, f)
+    case _ => BasedFile(dir, dir)
+  }
+
   val RelativeFileUrl = "file://([^/].+)".r
   val RelativePath = "([^/].+)".r
 
   /** Zip a media package.
+    * @param extractionDir the directory where the media package has been extracted to
+    * @param manifest the manifest file
     * @return the zipped media package. */
-  def zipMp(manifest: BFile, mp: MediaPackage): File = {
-    def mkFile(uri: URI): Option[BFile] = uri.toString match {
-      case RelativeFileUrl(path) => Some(BFile(manifest.base, path))
-      case RelativePath(path) => Some(BFile(manifest.base, path))
+  def zipMp(extractionDir: File, manifest: File, mp: MediaPackage): File = {
+    // root dir of the media package
+    val root = manifest.getParentFile
+    // create a based file relative to the media package root from an URI
+    def baseFile(uri: URI): Option[BasedFile] = uri.toString match {
+      case RelativeFileUrl(path) => Some(BasedFile(root, path))
+      case RelativePath(path) => Some(BasedFile(root, path))
       case _ => None
     }
     println("Zipping media package...")
-    val files = manifest :: mp.getElements.toList.flatMap(e => mkFile(e.getURI))
-    for (file <- files) println(" " + file.relativePath)
-    TmpDir.zipFor(manifest.base) &> (_.delete()) &> (Zip.zip(files, _: File))
+    val files = BasedFile(root, manifest) :: mp.getElements.toList.flatMap(e => baseFile(e.getURI))
+    for (file <- files) println(INDENTION + file.relativePath)
+    TmpDir.zipFor(extractionDir) &> (_.delete()) &> (Zip.zip(files, _: File))
   }
 
   /** Creates a tmp dir for a file and a zip file name from a tmp dir. */
   object TmpDir {
     val uuidLength = UUID.randomUUID().toString.length
-    def dirFor(zip: File) = new File(zip.getParentFile, FilenameUtils.getBaseName(zip.getName) + "-" + UUID.randomUUID().toString)
+    /** Create a directory next to the file. */
+    def dirFor(archive: File) = new File(archive.getParentFile, FilenameUtils.getBaseName(archive.getName) + "-" + UUID.randomUUID().toString)
+
+    /** Create a zip file next to the directory. */
     def zipFor(dir: File) = {
       val zipName = dir.getName.dropRight(uuidLength) match {
         case "" => dir.getName + "-1.4.zip"
@@ -177,13 +206,15 @@ object MpConverter {
   case object Ok extends UserInput
   case object ForceOk extends UserInput
   case object Continue extends UserInput
+  case object Help extends UserInput
 
   /** Complete media package element information. */
   @tailrec
   def completeMpes(mpes: List[Mpe], showTable: Boolean): List[Mpe] = {
     import Console.console.readLine
     if (showTable) MpeTableOutput.display(mpes)
-    val (newMpes, ok) = readLine(style(Bold)("[Return for help] > ")) match {
+    // read input
+    val (newMpes, ok) = readLine(style(Bold)("['h' for help] > ")) match {
       case Number(nr) if nr < mpes.size =>
         val mpe = mpes(nr)
         println("\nFixing " + mpe.id + " -> " + mpe.name)
@@ -203,16 +234,19 @@ object MpConverter {
       case "ok" => (mpes, Ok)
       case "ok!" => (mpes, ForceOk)
       case "q" => throw new RuntimeException("quit")
-      case _ =>
-        println(style(Yellow)("Type a number, 'ok' when finished, 'ok!' to force finishing or 'q' to quit."))
+      case "h" => (mpes, Help)
+      case _ => (mpes, Continue)
         (mpes, Continue)
     }
-    //
+    // evaluate input
     (isComplete(newMpes), ok) match {
       case (true, Ok) => newMpes
       case (_, ForceOk) => newMpes.filter(isComplete _)
       case (false, Ok) =>
         println(style(Red)("Not yet complete. Force media package creation with 'ok!'. This strips all incomplete elements."))
+        completeMpes(newMpes, showTable = false)
+      case (_, Help) =>
+        println(style(Yellow)("Type a number, 'ok' when finished, 'ok!' to force media package building or 'q' to quit."))
         completeMpes(newMpes, showTable = false)
       case _ => completeMpes(newMpes, showTable = true)
     }
@@ -258,12 +292,12 @@ object MpConverter {
   def findMpElems(root: File): List[Mpe] = for {
     subDir <- root.listFiles.toList.filter(_.isDirectory)
     file <- subDir.listFiles.filter(_.isFile)
-  } yield Mpe(BFile(file, root), subDir.getName, file.getName)
+  } yield Mpe(BasedFile(root, file), subDir.getName, file.getName)
 
   /** Save a manifest. */
   def saveManifest(manifest: File, mp: Node) { XML.save(manifest.getAbsolutePath, mp, enc = "utf-8", xmlDecl = true, doctype = null) }
 
-  /** Save a media package object and return the file. */
+  /** Save a media package object to `dir` and return the manifest file. */
   def saveMediaPackage(mp: MediaPackage, dir: File): File =
     (new File(dir, MANIFEST_FILENAME)) &> (f => Io.use(new FileOutputStream(f))(MediaPackageParser.getAsXml(mp, _, true)))
 
@@ -283,7 +317,7 @@ object MpConverter {
 /**
  * A media package element representation.
  */
-case class Mpe(file: BFile,
+case class Mpe(file: BasedFile,
                id: String, name: String,
                mpeType: Option[MediaPackageElement.Type] = None,
                mimeType: Option[MimeType] = None,

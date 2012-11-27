@@ -1,17 +1,17 @@
 package com.entwinemedia.util
 
-import _root_.jline.ANSIBuffer.ANSICodes._
-import _root_.jline.{Terminal => JTerminal}
-import xml.{NodeSeq, Node}
-import xml.transform.{RewriteRule, RuleTransformer}
+import jline.ANSIBuffer.ANSICodes._
+import jline.{Terminal => JTerminal}
 import scala.Left
 import scala.Right
 import scala.Some
+import xml.{NodeSeq, Node}
+import xml.transform.{RewriteRule, RuleTransformer}
 import java.io.File
-import org.opencastproject.util.FileSupport
 import java.net.{URLEncoder, URI}
-import de.schlichtherle.io
+import org.opencastproject.util.FileSupport
 
+/** XML transformations. */
 object XmlXform {
   def xform(f: PartialFunction[Node, NodeSeq]): RuleTransformer = new RuleTransformer(rule(f))
 
@@ -20,6 +20,7 @@ object XmlXform {
   }
 }
 
+/** Implicits for Either. */
 object EitherImplicits {
   final class ToLeft[A](a: A) {
     def fail = Left(a)
@@ -49,6 +50,7 @@ object EitherImplicits {
   }
 }
 
+/** Passing values. */
 object Pipe {
   class Pipe[A](a: A) {
     def |>[B](f: A => B): B = f(a)
@@ -62,6 +64,7 @@ object Pipe {
   implicit def _Any_SideEffect[A](a: A): SideEffect[A] = new SideEffect(a)
 }
 
+/** Functional try catch. */
 object Trial {
   import EitherImplicits._
 
@@ -76,6 +79,7 @@ object Trial {
   implicit def _Any_Trial[A](f: => A): Trial[A] = new Trial(f)
 }
 
+/** All purpose extractors. */
 object Extractors {
   /** Number extractor. */
   object Number {
@@ -86,8 +90,41 @@ object Extractors {
       case _ => None
     }
   }
+
+  /**
+   * Extracts file information.
+   * @param combinedExtensions true: file.tar.gz => tar.gz, false: gz
+   */
+  class FileInfo(combinedExtensions: Boolean) {
+    import com.entwinemedia.util.Extractors.FileInfo.{IsDir, IsFile, NonExistent, FileType}
+    import org.apache.commons.io.FilenameUtils._
+
+    def unapply(f: File): Option[(List[String], String, String, FileType)] = {
+      val path = f.getAbsolutePath
+      val t = if (f.exists) {if (f.isFile) IsFile else IsDir} else NonExistent
+      def skip(s: String): String = s match {
+        case '.' +++ xs => xs
+        case x +++ xs => skip(xs)
+        case _ => ""
+      }
+      val ex = if (combinedExtensions) skip(getName(path)) else skip(getName(path).reverse).reverse
+      Some((getPathNoEndSeparator(path).split(File.separator).toList, getBaseName(path), ex, t))
+    }
+  }
+
+  object FileInfo {
+    sealed trait FileType
+    case object IsFile extends FileType
+    case object IsDir extends FileType
+    case object NonExistent extends FileType
+  }
+
+  object +++ {
+    def unapply(s: String): Option[(Char, String)] = s.headOption.map(h => (h, s.drop(1)))
+  }
 }
 
+/** IO related functions. */
 object Io {
   /** Use a resource ensuring it gets closed afterwards. */
   def use[A <: {def close()}, B](resource: A)(f: A => B) = try {
@@ -100,31 +137,31 @@ object Io {
   def withTmpDir[A](d: File)(f: File => A) = try {
     f(d)
   } finally {
-    //FileSupport.delete(d, true)
+    FileSupport.delete(d, true)
   }
 }
 
-/** File with a base dir. `base` must be a directory and a parent of `file`. */
-case class BFile(file: File, base: File) {
+/** File with a base dir. `base` must be a directory and a parent of `sub`. */
+case class BasedFile(base: File, sub: File) {
   if (!base.isDirectory) throw new Error(base + " is not a directory")
-  if (!file.getAbsolutePath.startsWith(base.getAbsolutePath)) throw new Error(base + " is not a parent of " + file)
+  if (!sub.getAbsolutePath.startsWith(base.getAbsolutePath)) throw new Error(base + " is not a parent of " + sub)
 
   /** The relative path of `file` related to `base`. */
-  lazy val relativePath = file.getAbsolutePath.drop(base.getAbsolutePath.length + 1)
+  lazy val relativePath = sub.getAbsolutePath.drop(base.getAbsolutePath.length + 1)
 
   lazy val relativePathAsUri = new URI(relativePath.split(File.separator).map(URLEncoder.encode(_, "UTF-8")).mkString("/"))
 }
 
-object BFile {
-  def apply(base: File, path: String): BFile = BFile(new File(base, path), base)
-
+object BasedFile {
+  def apply(base: File, path: String): BasedFile = BasedFile(base, new File(base, path))
 }
 
+/** Zip */
 object Zip {
   // TrueZip
   import de.schlichtherle.io.{File => TFile}
 
-  def zip(files: List[BFile], zip: File): File = {
+  def zip(files: List[BasedFile], zip: File): File = {
     val tzip = new TFile(zip)
     if (!tzip.isArchive) throw new Error(zip + " is not a zip file")
     for (file <- files) TFile.cp(file, new TFile(tzip, file.relativePath))
@@ -133,12 +170,18 @@ object Zip {
   }
 
   implicit def _File_TFile(f: File): TFile = new TFile(f)
-  implicit def _BFile_TFile(f: BFile): TFile = new TFile(f.file)
+  implicit def _BFile_TFile(f: BasedFile): TFile = new TFile(f.sub)
 }
 
-/**
- * Terminal utilities. Based on jLine.
- */
+/** Implicits for functions. */
+object FunctionImplicits {
+  class Composition[B, C](f: B => C) {
+    def °[A](g: A => B) = f compose g
+  }
+  implicit def _Function_Composition[A, B, C](f: B => C) = new Composition(f)
+}
+
+/** Terminal utilities. Based on jLine. */
 object Terminal {
   val jterminal = JTerminal.getTerminal
 
