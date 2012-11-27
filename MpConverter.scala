@@ -28,10 +28,6 @@ object MpConverter {
   import Trial._
   import Console.{readMimeType, readFlavor, readMpeType}
 
-  val ZIP_EXT = "zip"
-  val TAR_GZ_EXT = "tar.gz"
-  val TGZ_EXT = "tgz"
-
   val INDENTION = "  "
 
   def main(args: Array[String]) {
@@ -48,20 +44,18 @@ object MpConverter {
       msg => println("[" + style(Green)("SUCCESS") + "] " + msg))
   }
 
-  val FileInfoEx = new FileInfo(true)
-
   /** Process a file or a directory. */
   def process(name: String): Either[String, String] = {
     def archived(extract: => File) =
       Io.withTmpDir(extract)((convert _) ° findRoot).tryMsg
     val r = new File(name) match {
-      case doz@FileInfoEx(_, _, ZIP_EXT, IsFile) =>
+      case doz@FileInfo(_, _, "zip" :: _, IsFile) =>
         println("Unzipping media package...")
         archived(unzip(doz))
-      case doz@FileInfoEx(_, _, TAR_GZ_EXT | TGZ_EXT, IsFile) =>
+      case doz@FileInfo(_, _, "gz" :: "tar" :: _ | "tgz" :: _, IsFile) =>
         println("Untar/gzip media package...")
         archived(untgz(doz))
-      case doz@FileInfoEx(_, _, _, IsDir) =>
+      case doz@FileInfo(_, _, _, IsDir) =>
         println("Using directory")
         convert(BasedFile(doz, doz)).tryMsg
       case a =>

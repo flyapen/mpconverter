@@ -91,32 +91,28 @@ object Extractors {
     }
   }
 
-  /**
-   * Extracts file information.
-   * @param combinedExtensions true: file.tar.gz => tar.gz, false: gz
-   */
-  class FileInfo(combinedExtensions: Boolean) {
-    import com.entwinemedia.util.Extractors.FileInfo.{IsDir, IsFile, NonExistent, FileType}
+  /** File information extractor.
+    * ([path_elements], base_name, [extensions_reversed], type) */
+  object FileInfo {
     import org.apache.commons.io.FilenameUtils._
 
-    def unapply(f: File): Option[(List[String], String, String, FileType)] = {
-      val path = f.getAbsolutePath
-      val t = if (f.exists) {if (f.isFile) IsFile else IsDir} else NonExistent
-      def skip(s: String): String = s match {
-        case '.' +++ xs => xs
-        case x +++ xs => skip(xs)
-        case _ => ""
-      }
-      val ex = if (combinedExtensions) skip(getName(path)) else skip(getName(path).reverse).reverse
-      Some((getPathNoEndSeparator(path).split(File.separator).toList, getBaseName(path), ex, t))
-    }
-  }
-
-  object FileInfo {
     sealed trait FileType
     case object IsFile extends FileType
     case object IsDir extends FileType
     case object NonExistent extends FileType
+
+    def unapply(f: File): Option[(List[String], String, List[String], FileType)] = {
+      def skip(s: String): String = s match {
+        case EXTENSION_SEPARATOR +++ xs => xs
+        case x +++ xs => skip(xs)
+        case _ => ""
+      }
+      val typ = if (f.exists) {if (f.isFile) IsFile else IsDir} else NonExistent
+      val path = f.getAbsolutePath
+      val extensions = skip(getName(path)).split(EXTENSION_SEPARATOR).toList.reverse
+      val pathElems = getPathNoEndSeparator(path).split(File.separator).toList
+      Some((pathElems, getBaseName(path), extensions, typ))
+    }
   }
 
   object +++ {
