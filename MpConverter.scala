@@ -36,7 +36,7 @@ object MpConverter {
               |Use tab completion when editing element infos.
             """.stripMargin)
     val result = for {
-      name <- args.headOption.toRight("please provide a zip file or a directory")
+      name <- args.headOption.toRight("please provide a zip/tar.gz/tgz file or a directory")
       result <- process(name)
     } yield result
     result.fold(
@@ -59,7 +59,7 @@ object MpConverter {
         println("Using directory")
         convert(BasedFile(doz, doz)).tryMsg
       case a =>
-        Left(a + " does not exist")
+        Left(a + " does not exist or does not have the correct format")
     }
     r.right.map(zip => "Created " + zip)
   }
