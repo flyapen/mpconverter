@@ -1,7 +1,7 @@
 package com.entwinemedia.mpconverter
 
 import java.io.{FileInputStream, FileOutputStream, File}
-import java.util.UUID
+import java.util.{Date, Calendar, UUID}
 import scala.xml._
 import org.apache.commons.io.FilenameUtils
 import org.opencastproject.util.{MimeTypes, MimeType, ZipUtil}
@@ -14,10 +14,12 @@ import MediaPackageElements.MANIFEST_FILENAME
 import annotation.tailrec
 import java.net.URI
 import math._
-import scala.Left
-import scala.Some
 import scala.sys.process._
 import com.entwinemedia.util.Extractors.FileInfo.{IsDir, IsFile}
+import org.opencastproject.metadata.dublincore._
+import scala.Some
+import scala.Left
+import java.util
 
 /**
  * Convert a zipped 1.3 media package into a 1.4 one or create it from a zipped directory structure.
@@ -29,6 +31,7 @@ object MpConverter {
   import Console.{readMimeType, readFlavor, readMpeType}
 
   val INDENTION = "  "
+  val ANY_DUBLINCORE = MediaPackageElementFlavor.parseFlavor("dublincore/*")
 
   def main(args: Array[String]) {
     println("""MediaPackage Converter
@@ -66,6 +69,7 @@ object MpConverter {
 
   /** Convert a MH 1.3 media package or a media package without manifest into a MH 1.4 compliant one. */
   def convert(dir: BasedFile): File = {
+    // handle manifest
     val (manifest, mp) = getManifest(dir.sub) match {
       case Some(manifest) =>
         println("Found manifest. Fixing namespace.")
@@ -74,8 +78,21 @@ object MpConverter {
         val mp = buildMediaPackage(dir.sub)
         (saveMediaPackage(mp, dir.sub), mp)
     }
+    // handle dublin cores
+    println("Fixing DublinCore catalogs.")
+    for {
+      c <- mp.getCatalogs(ANY_DUBLINCORE)
+      BasedFile(_, f) <- baseFile(dir.sub, c.getURI)
+    } {
+      println(INDENTION + c.getURI.toString)
+      saveDublinCore(DublinCoreFixer(loadDublinCore(f)), f)
+    }
+    // zip
     zipMp(dir.base, manifest, mp)
   }
+
+  def loadDublinCore(catalog: File): DublinCoreCatalog = Io.use(new FileInputStream(catalog))(new DublinCoreCatalogImpl(_))
+  def saveDublinCore(dc: DublinCoreCatalog, f: File) {Io.use(new FileOutputStream(f))(dc.toXml(_, true))}
 
   /** Unzip the given file to a temporary directory which is returned. */
   def unzip(zip: File): File = TmpDir.dirFor(zip) &> (ZipUtil.unzip(zip, _: File))
@@ -95,6 +112,13 @@ object MpConverter {
   val RelativeFileUrl = "file://([^/].+)".r
   val RelativePath = "([^/].+)".r
 
+  /** Create a based file relative to the media package root from a relative URI. */
+  def baseFile(root: File, uri: URI): Option[BasedFile] = uri.toString match {
+    case RelativeFileUrl(path) => Some(BasedFile(root, path))
+    case RelativePath(path) => Some(BasedFile(root, path))
+    case _ => None
+  }
+
   /** Zip a media package.
     * @param extractionDir the directory where the media package has been extracted to
     * @param manifest the manifest file
@@ -102,14 +126,8 @@ object MpConverter {
   def zipMp(extractionDir: File, manifest: File, mp: MediaPackage): File = {
     // root dir of the media package
     val root = manifest.getParentFile
-    // create a based file relative to the media package root from an URI
-    def baseFile(uri: URI): Option[BasedFile] = uri.toString match {
-      case RelativeFileUrl(path) => Some(BasedFile(root, path))
-      case RelativePath(path) => Some(BasedFile(root, path))
-      case _ => None
-    }
     println("Zipping media package...")
-    val files = BasedFile(root, manifest) :: mp.getElements.toList.flatMap(e => baseFile(e.getURI))
+    val files = BasedFile(root, manifest) :: mp.getElements.toList.flatMap(e => baseFile(root, e.getURI))
     for (file <- files) println(INDENTION + file.relativePath)
     TmpDir.zipFor(extractionDir) &> (_.delete()) &> (Zip.zip(files, _: File))
   }
@@ -183,6 +201,52 @@ object MpConverter {
   def buildMediaPackage(root: File): MediaPackage = {
     val mpes = findMpElems(root).map(guess _)
     completeMpes(mpes, showTable = true).map(mediaPackageElementFrom _) |> (newMediaPackage _)
+  }
+
+  object DublinCoreFixer {
+    import DublinCore._
+    import org.opencastproject.metadata.dublincore.{EncodingSchemeUtils => Enc}
+
+    val fixit = (PROPERTY_AVAILABLE, fixPeriod) ::
+      (PROPERTY_CREATED, fixDate(PROPERTY_CREATED.getLocalName) _) ::
+      (PROPERTY_EXTENT, fixDuration) ::
+      (PROPERTY_TEMPORAL, fixPeriod) ::
+      (PROPERTY_DATE, fixDate(PROPERTY_DATE.getLocalName) _) :: Nil
+
+    // 2012-02-01 09:46:16
+    val DatePattern = """([0-9]{4})-([0-9]{2})-([0-9]{2}) ([0-9]{2}):([0-9]{2}):([0-9]{2})""".r
+    val MsPattern = """([1-9][0-9]+)""".r
+
+    def fixDate(fieldName: String)(v: DublinCoreValue): DublinCoreValue = Enc.decodeDate(v) match {
+      case null => v.getValue match {
+        case DatePattern(y, m, d, h, min, s) =>
+          Enc.encodeDate(newDate(y.toInt, m.toInt, d.toInt, h.toInt, min.toInt, s.toInt), Precision.Minute)
+        case MsPattern(ms) =>
+          Enc.encodeDate(new Date(ms.toLong), Precision.Minute)
+        case value => throw new RuntimeException("Cannot fix field " + fieldName + "=" + value)
+      }
+      case date => v
+    }
+
+    def fixDuration = identity[DublinCoreValue] _
+
+    def fixPeriod = identity[DublinCoreValue] _
+
+    def newDate(y: Int, m: Int, d: Int, h: Int, min: Int, s: Int): Date = Calendar.getInstance() &> { cal =>
+      cal.set(Calendar.YEAR, y)
+      cal.set(Calendar.MONTH, m - 1)
+      cal.set(Calendar.DAY_OF_MONTH, d)
+      cal.set(Calendar.HOUR_OF_DAY, h)
+      cal.set(Calendar.MINUTE, min)
+      cal.set(Calendar.SECOND, s)
+    } |> (_.getTime)
+
+    /** In place fixing of DublinCore metadata. */
+    def apply(dc: DublinCoreCatalog): DublinCoreCatalog = {
+      import collection.JavaConversions._
+      for ((prop, fixf) <- fixit) dc.set(prop, dc.get(prop).toList.map(fixf))
+      dc
+    }
   }
 
   val mpBuilder = MediaPackageBuilderFactory.newInstance.newMediaPackageBuilder
