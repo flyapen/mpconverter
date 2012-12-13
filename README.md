@@ -26,6 +26,8 @@ If you don't want to build MpConverter yourself you can find the binary in the `
 # Use
 The only requirement for running the converter is a Java 1.5+ runtime. Run `mpconv.sh <mp.zip|mp.tgz|mp.tar.gz|directory>` and follow the instructions.
 
+The `mpconv.sh` wrapper script does not run on Mac OS X platforms. Please use `java -jar mpconverter_2.9.2-1.0-one-jar.jar <arg>` instead.
+
 # Notes           
 Running the converter on a directory will rewrite or create the manifest *in place*. Please keep a copy if you need the original package. Passing in a zip or tgz however leaves the original media package untouched.
   
